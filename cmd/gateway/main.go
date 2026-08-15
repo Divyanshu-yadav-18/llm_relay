@@ -1,3 +1,5 @@
+// Package main is the entrypoint for the LLM Relay gateway.
+// It initializes configuration, sets up providers, and starts the HTTP server.
 package main
 
 import (
@@ -67,12 +69,19 @@ func main() {
 
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit to prevent OOM from malicious payloads
+
 		var req providers.ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			providers.WriteErrorResponse(w, http.StatusBadRequest, "invalid JSON payload", "invalid_request_error", "")
+			providers.WriteErrorResponse(w, http.StatusBadRequest, "invalid JSON payload or payload too large", "invalid_request_error", "")
 			return
 		}
 
+		// Provider resolution chain:
+		// 1. Explicit provider requested in the payload
+		// 2. Model map routing (if the requested model is bound to a specific provider)
+		// 3. Default provider fallback
 		providerName := req.Provider
 		if providerName == "" {
 			providerName = cfg.Routing.ModelMap[req.Model]
