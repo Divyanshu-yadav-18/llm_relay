@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -9,7 +10,9 @@ import (
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/providers"
 )
 
-// mockResponseWriter implements http.ResponseWriter and http.Flusher
+// mockResponseWriter implements http.ResponseWriter and http.Flusher.
+// We use this instead of httptest.ResponseRecorder directly so the
+// explicit Flusher wrapping is clear in each test case.
 type mockResponseWriter struct {
 	*httptest.ResponseRecorder
 }
@@ -18,9 +21,21 @@ func (m *mockResponseWriter) Flush() {
 	m.ResponseRecorder.Flush()
 }
 
+// noFlushResponseWriter implements http.ResponseWriter but NOT http.Flusher.
+// httptest.ResponseRecorder actually has a Flush() method, so we can't use it
+// directly to test the "no Flusher" path. This type deliberately omits Flush().
+type noFlushResponseWriter struct {
+	header http.Header
+	code   int
+	body   []byte
+}
+
+func (w *noFlushResponseWriter) Header() http.Header         { return w.header }
+func (w *noFlushResponseWriter) Write(b []byte) (int, error)  { w.body = append(w.body, b...); return len(b), nil }
+func (w *noFlushResponseWriter) WriteHeader(statusCode int)   { w.code = statusCode }
+
 func TestStreamToClient(t *testing.T) {
 	t.Run("Successful stream writes correct SSE format", func(t *testing.T) {
-		t.Helper()
 		chunks := make(chan providers.StreamChunk, 2)
 		errCh := make(chan error, 1)
 
@@ -39,22 +54,21 @@ func TestStreamToClient(t *testing.T) {
 
 		body := rec.Body.String()
 		if !strings.Contains(body, "data: {\"id\":\"1\"") {
-			t.Errorf("missing chunk 1")
+			t.Errorf("missing chunk 1 in body: %q", body)
 		}
 		if !strings.Contains(body, "data: {\"id\":\"2\"") {
-			t.Errorf("missing chunk 2")
+			t.Errorf("missing chunk 2 in body: %q", body)
 		}
 		if !strings.HasSuffix(body, "data: [DONE]\n\n") {
 			t.Errorf("missing or incorrect [DONE] suffix: %q", body)
 		}
-		
+
 		if rec.Header().Get("Content-Type") != "text/event-stream" {
-			t.Errorf("incorrect Content-Type")
+			t.Errorf("incorrect Content-Type: %q", rec.Header().Get("Content-Type"))
 		}
 	})
 
 	t.Run("Empty chunk channel produces only [DONE]", func(t *testing.T) {
-		t.Helper()
 		chunks := make(chan providers.StreamChunk)
 		errCh := make(chan error, 1)
 
@@ -76,12 +90,11 @@ func TestStreamToClient(t *testing.T) {
 	})
 
 	t.Run("Error on errCh is returned after streaming", func(t *testing.T) {
-		t.Helper()
 		chunks := make(chan providers.StreamChunk)
 		errCh := make(chan error, 1)
 
 		close(chunks)
-		
+
 		expectedErr := errors.New("stream failed")
 		errCh <- expectedErr
 		close(errCh)
@@ -96,15 +109,14 @@ func TestStreamToClient(t *testing.T) {
 	})
 
 	t.Run("ResponseWriter without Flusher returns error", func(t *testing.T) {
-		t.Helper()
 		chunks := make(chan providers.StreamChunk)
 		errCh := make(chan error, 1)
 
-		// httptest.ResponseRecorder does NOT implement Flusher by default
-		// unless we wrap it like we did in mockResponseWriter
-		rec := httptest.NewRecorder()
+		// noFlushResponseWriter deliberately omits Flush(), so the Flusher
+		// type assertion inside StreamToClient will fail immediately.
+		w := &noFlushResponseWriter{header: make(http.Header)}
 
-		err := StreamToClient(rec, chunks, errCh)
+		err := StreamToClient(w, chunks, errCh)
 		if err == nil {
 			t.Fatalf("expected error for missing Flusher, got nil")
 		}
