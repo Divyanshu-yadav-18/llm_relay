@@ -4,6 +4,8 @@ server:
   write_timeout_seconds: 120
   log_level: info
 
+redis_url: ${REDIS_URL:-redis://localhost:6379}
+
 providers:
   openai:
     base_url: https://api.openai.com/v1
@@ -37,6 +39,7 @@ routing:
     - anthropic
 
 rate_limit:
+  enabled: true
   default_tokens_per_minute: 100000
   default_burst: 10000
 

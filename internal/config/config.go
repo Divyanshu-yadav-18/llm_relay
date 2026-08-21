@@ -15,6 +15,7 @@ import (
 // Config represents the top-level configuration for the LLM Relay gateway.
 type Config struct {
 	Server     ServerConfig               `yaml:"server"`
+	RedisURL   string                     `yaml:"redis_url"`
 	Providers  map[string]ProviderConfig `yaml:"providers"`
 	Routing    RoutingConfig              `yaml:"routing"`
 	RateLimit  RateLimitConfig            `yaml:"rate_limit"`
@@ -43,8 +44,9 @@ type RoutingConfig struct {
 }
 
 type RateLimitConfig struct {
-	DefaultTokensPerMinute int `yaml:"default_tokens_per_minute"`
-	DefaultBurst           int `yaml:"default_burst"`
+	Enabled                bool `yaml:"enabled"`
+	DefaultTokensPerMinute int  `yaml:"default_tokens_per_minute"`
+	DefaultBurst           int  `yaml:"default_burst"`
 }
 
 type CacheConfig struct {
@@ -124,6 +126,9 @@ func (c *Config) expandEnvAndDefaults() {
 		provider.APIKey = os.ExpandEnv(provider.APIKey)
 		c.Providers[name] = provider
 	}
+
+	// Expand env vars in Redis URL (e.g., ${REDIS_URL})
+	c.RedisURL = os.ExpandEnv(c.RedisURL)
 
 	// Rate limit defaults
 	if c.RateLimit.DefaultTokensPerMinute == 0 {

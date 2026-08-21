@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/config"
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/providers"
@@ -24,6 +25,7 @@ import (
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/providers/ollama"
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/providers/openai"
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/proxy"
+	"github.com/Divyanshu-yadav-18/llm_relay/internal/ratelimit"
 	"github.com/Divyanshu-yadav-18/llm_relay/internal/resilience"
 )
 
@@ -110,6 +112,40 @@ func main() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+
+	// --- Rate Limiting (optional) ---
+	// Only enable when rate_limit.enabled is true and a Redis URL is configured.
+	// The limiter fails open — if Redis goes down, requests pass through
+	// rather than blocking all traffic.
+	if cfg.RateLimit.Enabled && cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			slog.Error("invalid redis URL, rate limiting disabled", "error", err)
+		} else {
+			redisClient := redis.NewClient(opts)
+			// Quick connectivity check — non-fatal if it fails
+			pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := redisClient.Ping(pingCtx).Err(); err != nil {
+				slog.Warn("redis not reachable, rate limiting will fail open", "error", err)
+			} else {
+				slog.Info("redis connected for rate limiting")
+			}
+			pingCancel()
+
+			limiter := ratelimit.NewTokenBucket(
+				redisClient,
+				int64(cfg.RateLimit.DefaultTokensPerMinute),
+				int64(cfg.RateLimit.DefaultBurst),
+			)
+			r.Use(ratelimit.Middleware(limiter, logger))
+			slog.Info("rate limiting enabled",
+				"tokens_per_min", cfg.RateLimit.DefaultTokensPerMinute,
+				"burst", cfg.RateLimit.DefaultBurst,
+			)
+		}
+	} else {
+		slog.Info("rate limiting disabled")
+	}
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
